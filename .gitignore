@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# Entornos
+.env
+.env.*
+venv/
+.venv/
+ENV/
+
+# Archivos de ejecución
+*.log
+
+# Sistema
+.DS_Store
+
+# Editor
+.vscode/
+.idea/
+
+# Datos sensibles o salidas
+nmap_*_scan.txt
