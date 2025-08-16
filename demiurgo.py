@@ -10,6 +10,7 @@ from typing import Any, Dict, Optional, List, Set, Tuple
 import atexit
 import datetime
 import threading
+import pathlib
 import google.generativeai as genai
 from google.generativeai import types
 from dotenv import load_dotenv
@@ -62,9 +63,13 @@ class PsicoHackerIA:
         self.report_format = "text"
         self.custom_tools: Dict[str, str] = {}
         self.log_output_path: Optional[str] = None
+        self.dynamic_arsenal_path = os.getenv("DYNAMIC_ARSENAL_FILE", "dynamic_arsenal.json")
+        self.service_fingerprints: Set[str] = set()
+        self._load_dynamic_arsenal()
         if not self.model:
             raise SystemExit("\033[91m[!] No se pudo inicializar el LLM. Abortando.\033[0m")
         atexit.register(self._persist_mission_log)
+        atexit.register(self._generate_final_report)
 
     def _load_prompt(self):
         try:
@@ -73,6 +78,13 @@ class PsicoHackerIA:
             raise SystemExit("\033[91m[!] Error Crítico: No se encontró 'prompt.txt'.\033[0m")
 
     def _initialize_llm(self):
+        # Permitir saltar inicialización en pruebas
+        if os.getenv('SKIP_LLM_INIT'):
+            class _Dummy:
+                def generate_content(self, prompt):
+                    class R: text = '{"pensamiento_estrategico": "dummy", "accion_propuesta": {"tipo": "COMANDO_SHELL", "herramienta": "nmap_quick_scan", "payload": "echo dummy"}, "contramedida_blue_team": "dummy"}'
+                    return R()
+            return _Dummy()
         api_key = None
         for name in API_KEY_ENV_NAMES:
             api_key = os.getenv(name)
@@ -137,6 +149,9 @@ class PsicoHackerIA:
         if "nmap" in tool_name:
             open_ports = re.findall(r'^(\d+/tcp|\d+/udp)\s+open\s+(\S+)\s+(.*)', tool_output, re.MULTILINE)
             if not open_ports: return "Nmap no encontró puertos abiertos."
+            for p, s, v in open_ports:
+                fp = f"{p} {s} {v.strip()}"[:120]
+                self.service_fingerprints.add(fp)
             return "Puertos Abiertos Encontrados:\n" + "\n".join([f"- {p} {s} {v}" for p, s, v in open_ports])
         
         return (tool_output[:2000] + '...') if len(tool_output) > 2000 else tool_output
@@ -149,6 +164,15 @@ class PsicoHackerIA:
         if not re.match(r'^[a-zA-Z0-9_\-]+$', name):
             return "Nombre de herramienta inválido."
         self.custom_tools[name] = template
+        # Persistir inmediatamente
+        try:
+            existing = {}
+            if os.path.isfile(self.dynamic_arsenal_path):
+                existing = json.load(open(self.dynamic_arsenal_path, 'r', encoding='utf-8'))
+            existing[name] = template
+            json.dump(existing, open(self.dynamic_arsenal_path, 'w', encoding='utf-8'), ensure_ascii=False, indent=2)
+        except Exception as e:
+            logging.warning("No se pudo persistir herramienta dinámica: %s", e)
         return f"Herramienta '{name}' registrada localmente."
 
     def _web_search_stub(self, query: str) -> str:
@@ -189,6 +213,36 @@ class PsicoHackerIA:
         return (f"INFORME TÁCTICO\nObjetivo: {self.target}\nAcción: {action.get('tipo')}\n" \
                 f"Comando/Payload: {action.get('payload')}\nPensamiento: {decision.get('pensamiento_estrategico')}\n" \
                 f"Resultado:\n{result[:1500]}\n")
+
+    def _load_dynamic_arsenal(self):
+        try:
+            if os.path.isfile(self.dynamic_arsenal_path):
+                data = json.load(open(self.dynamic_arsenal_path, 'r', encoding='utf-8'))
+                if isinstance(data, dict):
+                    self.custom_tools.update({k: str(v) for k,v in data.items()})
+        except Exception as e:
+            logging.warning("No se pudo cargar arsenal dinámico: %s", e)
+
+    def _generate_final_report(self):
+        if not self.mission_log:
+            return
+        ts = datetime.datetime.now(datetime.UTC).strftime('%Y%m%d_%H%M%S') if hasattr(datetime, 'UTC') else datetime.datetime.utcnow().strftime('%Y%m%d_%H%M%S')
+        path = f"final_report_{ts}.md"
+        try:
+            lines = [f"# Informe Final - Objetivo {self.target}", "", "## Línea Temporal", ""]
+            for e in self.mission_log:
+                lines.append(f"- {e.get('evento','accion')} | {e.get('decision',{}).get('accion_propuesta',{}).get('tipo','')} -> {str(e)[:160]}")
+            if self.service_fingerprints:
+                lines += ["", "## Huella de Servicios Detectados", ""]
+                for fp in sorted(self.service_fingerprints):
+                    lines.append(f"- {fp}")
+            if self.custom_tools:
+                lines += ["", "## Herramientas Dinámicas Registradas", ""]
+                for name, tpl in self.custom_tools.items():
+                    lines.append(f"- **{name}**: `{tpl}`")
+            pathlib.Path(path).write_text("\n".join(lines), encoding='utf-8')
+        except Exception as e:
+            logging.warning("No se pudo generar informe final: %s", e)
 
     def get_ai_decision(self, context_summary):
         prompt = self.prompt_template.replace("{context}", context_summary)
@@ -248,7 +302,9 @@ class PsicoHackerIA:
             context = {
                 "resumen_mision": self.mission_log[-3:],
                 "ultimo_resultado": last_output,
-                "directiva_comandante": commander_directive # Incluimos la directiva del comandante
+                "directiva_comandante": commander_directive, # Incluimos la directiva del comandante
+                "huella_servicios": list(sorted(self.service_fingerprints))[:50],
+                "herramientas_dinamicas": list(self.custom_tools.keys())
             }
             # Reseteamos la directiva después de usarla para el pensamiento
             commander_directive = None 
