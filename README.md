@@ -22,9 +22,32 @@ GOOGLE_API_KEY="TU_CLAVE"
 
 ## Uso
 ```bash
+python demiurgo.py <objetivo>
+```
+O modo asistido (pregunta objetivo):
+```bash
 python demiurgo.py
 ```
-Ingresa el objetivo (IP, dominio o URL base). Autoriza cada acción propuesta (s = ejecutar, a = dar directiva y recalcular, n/enter = salir).
+
+Flags CLI principales:
+| Flag | Descripción |
+|------|-------------|
+| `--once` | Ejecuta solo un ciclo (útil para pruebas automatizadas) |
+| `--report-format {text,markdown,html}` | Formato del informe táctico mostrado |
+| `--log-file RUTA` | Forzar ruta de persistencia del `mission_log` |
+| `--disable-cache` | Desactiva cache en memoria para comandos repetidos |
+
+Variables de entorno útiles:
+- `GOOGLE_API_KEY` / `GEMINI_API_KEY`: clave del modelo.
+- `GEMINI_MODEL`: nombre del modelo (default gemini-2.5-pro).
+- `SKIP_LLM_INIT=1`: modo dummy para tests.
+- `DYNAMIC_ARSENAL_FILE`: nombre de archivo para arsenal dinámico (default `dynamic_arsenal.json`).
+
+Funciones avanzadas:
+- Registro de herramientas dinámicas: la IA puede proponer `EJECUCION_DE_CODIGO_NATIVA` con payload `NOMBRE::COMANDO` y quedará persistido.
+- Cache de resultados para herramientas de reconocimiento pesado (nmap, whatweb, etc.).
+- Persistencia automática del mission log y compresión gzip si supera 50KB.
+- Informe final markdown `final_report_*.md` con huella de servicios y herramientas dinámicas.
 
 ## Estructura
 - `demiurgo.py`: Núcleo de control y ciclo de misión.
@@ -36,6 +59,8 @@ Ingresa el objetivo (IP, dominio o URL base). Autoriza cada acción propuesta (s
 - Nunca subas tu `.env` con claves reales.
 - Revisa comandos antes de autorizarlos.
 - Limita permisos del entorno de ejecución.
+- No ejecutes contra objetivos sin autorización explícita.
+- Revisa el comando exacto antes de autorizarlo (la política de lista blanca no es sustituto del juicio humano).
 
 ## Licencia
 MIT. Ver `LICENSE`.

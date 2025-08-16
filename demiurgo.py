@@ -11,6 +11,7 @@ import atexit
 import datetime
 import threading
 import pathlib
+import gzip
 import google.generativeai as genai
 from google.generativeai import types
 from dotenv import load_dotenv
@@ -187,12 +188,22 @@ class PsicoHackerIA:
     # Persistencia y reportes
     # ------------------------------------------------------------------
     def _persist_mission_log(self):
+        if not self.mission_log:
+            return
         if not self.log_output_path:
-            timestamp = datetime.datetime.utcnow().strftime('%Y%m%d_%H%M%S')
-            self.log_output_path = f"mission_log_{timestamp}.json"
+            ts = datetime.datetime.now(datetime.UTC).strftime('%Y%m%d_%H%M%S') if hasattr(datetime, 'UTC') else datetime.datetime.utcnow().strftime('%Y%m%d_%H%M%S')
+            self.log_output_path = f"mission_log_{ts}.json"
         try:
             with open(self.log_output_path, 'w', encoding='utf-8') as f:
                 json.dump(self.mission_log, f, ensure_ascii=False, indent=2)
+            # Comprimir si supera umbral (50KB)
+            size = os.path.getsize(self.log_output_path)
+            if size > 50 * 1024:
+                gz_path = self.log_output_path + '.gz'
+                with open(self.log_output_path, 'rb') as fin, gzip.open(gz_path, 'wb') as fout:
+                    shutil.copyfileobj(fin, fout)
+                os.remove(self.log_output_path)
+                self.log_output_path = gz_path
         except Exception as e:
             logging.warning("No se pudo persistir mission_log: %s", e)
 
