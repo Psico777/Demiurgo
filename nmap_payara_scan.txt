@@ -1,0 +1,18 @@
+# Nmap 7.95 scan initiated Sun Jul 13 21:27:24 2025 as: /usr/lib/nmap/nmap --privileged -p 8181 -sV -sC --open -T4 -oN nmap_payara_scan.txt sgd.munichiclayo.gob.pe
+Nmap scan report for sgd.munichiclayo.gob.pe (216.244.171.249)
+Host is up (0.44s latency).
+
+PORT     STATE SERVICE  VERSION
+8181/tcp open  ssl/http Payara Server httpd 5.2020.2 (Servlet 4.0; JSP 2.3; Java 1.8)
+| ssl-cert: Subject: commonName=munichiclayo.gob.pe
+| Subject Alternative Name: DNS:munichiclayo.gob.pe, DNS:correo.munichiclayo.gob.pe, DNS:sgd.munichiclayo.gob.pe, DNS:sisgedo.munichiclayo.gob.pe
+| Not valid before: 2024-09-12T00:00:00
+|_Not valid after:  2025-08-11T23:59:59
+|_ssl-date: TLS randomness does not represent time
+|_http-server-header: Payara Server  5.2020.2 #badassfish
+|_http-title: Payara Server - Server Running
+| http-methods: 
+|_  Potentially risky methods: PUT DELETE TRACE
+
+Service detection performed. Please report any incorrect results at https://nmap.org/submit/ .
+# Nmap done at Sun Jul 13 21:27:57 2025 -- 1 IP address (1 host up) scanned in 33.11 seconds
