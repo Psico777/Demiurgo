@@ -1,2 +1,1 @@
-# Nmap 7.95 scan initiated Sun Jul 13 21:22:29 2025 as: /usr/lib/nmap/nmap --privileged -sV -sC --open -T4 -oN nmap_initial_scan.txt sisgedo.munichiclayo.gob.pe
-# Nmap done at Sun Jul 13 21:22:31 2025 -- 1 IP address (0 hosts up) scanned in 2.51 seconds
+# Nmap 7.95 scan initiated Fri Aug 15 23:02:54 2025 as: /usr/lib/nmap/nmap --privileged -sV -sC -p- -oN nmap_initial_scan.txt sgd.midis.gob.pe

@@ -1,0 +1,9 @@
+[
+  {
+    "timestamp": "2025-08-15T10:00:00Z",
+    "action": "nmap",
+    "command": "nmap -sV sgd.midis.gob.pe",
+    "output": "80/tcp open http Apache/2.4.41",
+    "decision": "Found web server on port 80"
+  }
+]

@@ -74,7 +74,10 @@ class PsicoHackerIA:
 
     def _load_prompt(self):
         try:
-            with open('prompt.txt', 'r') as f: return f.read()
+            # Cargar prompt (usar versión rápida si existe)
+            prompt_path = "prompt_rapido.txt" if os.path.exists("prompt_rapido.txt") else "prompt.txt"
+            with open(prompt_path, "r", encoding="utf-8") as f:
+                return f.read()
         except FileNotFoundError:
             raise SystemExit("\033[91m[!] Error Crítico: No se encontró 'prompt.txt'.\033[0m")
 
@@ -287,7 +290,18 @@ class PsicoHackerIA:
                 if cached:
                     return cached + "\n(CACHE)"
                 print(f"    - Comando de sistema a ejecutar: {payload}")
-                process = subprocess.run(payload, shell=True, capture_output=True, text=True, timeout=900)
+                
+                # Timeouts optimizados para velocidad
+                if "nmap" in payload and "-p-" in payload:
+                    timeout = 1800  # 30 min para escaneos completos
+                elif "nmap" in payload:
+                    timeout = 300   # 5 min para escaneos rápidos
+                elif any(tool in payload for tool in ["gobuster", "dirb", "dirbuster"]):
+                    timeout = 600   # 10 min para fuzzing
+                else:
+                    timeout = 120   # 2 min para comandos básicos
+                    
+                process = subprocess.run(payload, shell=True, capture_output=True, text=True, timeout=timeout)
                 triaged = self._triage_output(process.stdout + process.stderr, action.get("herramienta", "shell"))
                 self._cache_store(payload, triaged)
                 return triaged
