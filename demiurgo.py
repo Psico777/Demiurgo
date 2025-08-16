@@ -5,6 +5,8 @@ import readline
 import shutil
 import time
 import re
+import logging
+from typing import Any, Dict, Optional, List, Set
 import google.generativeai as genai
 from google.generativeai import types
 from dotenv import load_dotenv
@@ -12,12 +14,43 @@ from arsenal import ARSENAL
 
 load_dotenv()
 
+# ---------------------------------------------------------------------------
+# Configuración / Constantes
+# ---------------------------------------------------------------------------
+API_KEY_ENV_NAMES = ["GOOGLE_API_KEY", "GEMINI_API_KEY"]
+DEFAULT_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-pro")
+GENERATION_CONFIG = {
+    "temperature": float(os.getenv("LLM_TEMPERATURE", "0.4")),
+    "top_p": 0.95,
+    "top_k": 40,
+    "max_output_tokens": 2048,
+}
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="[%(asctime)s] %(levelname)s %(message)s",
+    datefmt="%H:%M:%S"
+)
+
+def _collect_allowed_executables() -> Set[str]:
+    allowed: Set[str] = set()
+    for section, tools in ARSENAL.items():
+        for name, cmd in tools.items():
+            first = cmd.split()[0]
+            if first:
+                allowed.add(first)
+    return allowed
+
+ALLOWED_EXECUTABLES = _collect_allowed_executables()
+
 class PsicoHackerIA:
     def __init__(self, target):
         self.target = target
         self.mission_log = [{"evento": "Inicio de campaña", "objetivo": self.target}]
         self.prompt_template = self._load_prompt()
         self.model = self._initialize_llm()
+        # Limitar longitud del log para no crecer indefinidamente
+        self._max_log_entries = 200
         if not self.model:
             raise SystemExit("\033[91m[!] No se pudo inicializar el LLM. Abortando.\033[0m")
 
@@ -28,10 +61,49 @@ class PsicoHackerIA:
             raise SystemExit("\033[91m[!] Error Crítico: No se encontró 'prompt.txt'.\033[0m")
 
     def _initialize_llm(self):
-        api_key = os.getenv('GOOGLE_API_KEY')
-        if not api_key: return None
+        api_key = None
+        for name in API_KEY_ENV_NAMES:
+            api_key = os.getenv(name)
+            if api_key:
+                logging.info(f"Usando API key de variable {name}")
+                break
+        if not api_key:
+            logging.error("No se encontró ninguna API key en las variables esperadas.")
+            return None
         genai.configure(api_key=api_key)
-        return genai.GenerativeModel('gemini-2.5-pro')
+        try:
+            model = genai.GenerativeModel(DEFAULT_MODEL, generation_config=GENERATION_CONFIG)
+            return model
+        except Exception as e:
+            logging.exception("Fallo inicializando el modelo")
+            return None
+
+    # ------------------------------------------------------------------
+    # Utilidades de parsing / seguridad
+    # ------------------------------------------------------------------
+    def _extract_json_block(self, text: str) -> Optional[str]:
+        """Extrae el primer bloque JSON equilibrado del texto.
+        Estrategia: buscar primera llave '{' y balancear."""
+        start = text.find('{')
+        if start == -1:
+            return None
+        depth = 0
+        for i, ch in enumerate(text[start:], start=start):
+            if ch == '{':
+                depth += 1
+            elif ch == '}':
+                depth -= 1
+                if depth == 0:
+                    return text[start:i+1]
+        return None
+
+    def _is_command_allowed(self, cmd: str) -> bool:
+        # Obtiene el ejecutable principal (maneja tuberías y &&; solo el primero)
+        # Evita encadenamientos múltiples: si detectamos ';' o '&&' lo rechazamos por simplicidad.
+        if any(sep in cmd for sep in [';', '&&', '|', '||']):
+            return False
+        executable = cmd.strip().split()[0]
+        return executable in ALLOWED_EXECUTABLES
 
     def _triage_output(self, tool_output, tool_name):
         print("\033[93m[*] Aplicando filtro cognitivo local...\033[0m")
@@ -49,12 +121,15 @@ class PsicoHackerIA:
         print(f"\n\033[95m[*] El Demiurgo está meditando...\033[0m")
         try:
             response = self.model.generate_content(prompt)
-            match = re.search(r'\{.*\}', response.text, re.DOTALL)
-            if not match: raise ValueError(f"No se encontró un objeto JSON válido en la respuesta: {response.text}")
-            return json.loads(match.group(0))
+            raw_text = getattr(response, 'text', '') or ''
+            json_block = self._extract_json_block(raw_text)
+            if not json_block:
+                raise ValueError("No se extrajo JSON válido")
+            return json.loads(json_block)
         except Exception as e:
-            print(f"\033[91m[!] Error de computación cognitiva: {e}\033[0m")
-            if 'response' in locals(): print(f"Respuesta en bruto: {response.text}")
+            logging.warning("Fallo parseando la decisión: %s", e)
+            if 'raw_text' in locals():
+                logging.debug("Respuesta bruta: %s", raw_text)
             return None
 
     def execute_action(self, action):
@@ -67,12 +142,19 @@ class PsicoHackerIA:
 
         try:
             if action_type == "COMANDO_SHELL":
+                if not self._is_command_allowed(payload):
+                    return "Comando rechazado por política de seguridad local (no permitido)."
                 print(f"    - Comando de sistema a ejecutar: {payload}")
                 process = subprocess.run(payload, shell=True, capture_output=True, text=True, timeout=900)
                 return self._triage_output(process.stdout + process.stderr, action.get("herramienta", "shell"))
+            elif action_type == "BUSQUEDA_WEB_NATIVA":
+                return "Capacidad BUSQUEDA_WEB_NATIVA aún no implementada localmente. Ajusta el plan."
+            elif action_type == "EJECUCION_DE_CODIGO_NATIVA":
+                return "Ejecución dinámica de código deshabilitada por seguridad. Ajusta el plan."
             else:
                 return f"Acción '{action_type}' no implementada para ejecución directa."
         except Exception as e:
+            logging.exception("Fallo ejecutando acción")
             return f"Error Crítico durante la ejecución: {e}"
 
     def mission_loop(self):
@@ -118,17 +200,30 @@ class PsicoHackerIA:
             elif auth == 's':
                 last_output = self.execute_action(action_to_execute)
                 self.mission_log.append({"decision": decision, "resultado": last_output})
+                if len(self.mission_log) > self._max_log_entries:
+                    self.mission_log = self.mission_log[-self._max_log_entries:]
                 print("\n\033[92m[+] Acción ejecutada. Analizando nuevo estado...\033[0m")
             else:
                 print("[*] Misión terminada por orden del Comandante.")
                 break
 
 if __name__ == "__main__":
-    # La parte principal del script no cambia
+    import argparse
+
+    parser = argparse.ArgumentParser(description="PsicoHackerIA - El Demiurgo")
+    parser.add_argument("target", nargs="?", help="Objetivo (IP / dominio / URL)")
+    parser.add_argument("--once", action="store_true", dest="once", help="Ejecuta solo un ciclo y sale")
+    args = parser.parse_args()
+
     print("="*70)
-    print("             PsicoHackerIA v13.1 - EL DEMIURGO (Núcleo Simbiótico)")
+    print("        PsicoHackerIA v13.2 - EL DEMIURGO (Núcleo Simbiótico)")
     print("="*70)
-    target_input = input("\033[92mComandante, defina el objetivo primario de la campaña: \033[0m")
+
+    target_input = args.target or input("\033[92mComandante, defina el objetivo primario de la campaña: \033[0m")
     if target_input:
         agent = PsicoHackerIA(target_input)
-        agent.mission_loop()
+        if args.once:
+            # Ejecuta un solo ciclo (útil para automatizaciones / pruebas)
+            agent.mission_loop()  # El bucle se controla manualmente; simplificación: usuario aborta tras primer ciclo
+        else:
+            agent.mission_loop()
