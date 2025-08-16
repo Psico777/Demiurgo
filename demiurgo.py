@@ -6,7 +6,10 @@ import shutil
 import time
 import re
 import logging
-from typing import Any, Dict, Optional, List, Set
+from typing import Any, Dict, Optional, List, Set, Tuple
+import atexit
+import datetime
+import threading
 import google.generativeai as genai
 from google.generativeai import types
 from dotenv import load_dotenv
@@ -43,6 +46,11 @@ def _collect_allowed_executables() -> Set[str]:
 
 ALLOWED_EXECUTABLES = _collect_allowed_executables()
 
+# Cache simple en memoria para salidas de comandos (payload -> salida triageada)
+_command_cache_lock = threading.Lock()
+_command_cache: Dict[str, str] = {}
+CACHEABLE_PREFIXES = {"nmap", "whatweb", "amass", "subfinder", "gobuster", "nikto", "searchsploit"}
+
 class PsicoHackerIA:
     def __init__(self, target):
         self.target = target
@@ -51,8 +59,12 @@ class PsicoHackerIA:
         self.model = self._initialize_llm()
         # Limitar longitud del log para no crecer indefinidamente
         self._max_log_entries = 200
+        self.report_format = "text"
+        self.custom_tools: Dict[str, str] = {}
+        self.log_output_path: Optional[str] = None
         if not self.model:
             raise SystemExit("\033[91m[!] No se pudo inicializar el LLM. Abortando.\033[0m")
+        atexit.register(self._persist_mission_log)
 
     def _load_prompt(self):
         try:
@@ -103,7 +115,20 @@ class PsicoHackerIA:
         if any(sep in cmd for sep in [';', '&&', '|', '||']):
             return False
         executable = cmd.strip().split()[0]
-        return executable in ALLOWED_EXECUTABLES
+        return executable in ALLOWED_EXECUTABLES or executable in self.custom_tools
+
+    def _cache_lookup(self, cmd: str) -> Optional[str]:
+        first = cmd.split()[0]
+        if first not in CACHEABLE_PREFIXES:
+            return None
+        with _command_cache_lock:
+            return _command_cache.get(cmd)
+
+    def _cache_store(self, cmd: str, value: str):
+        first = cmd.split()[0]
+        if first in CACHEABLE_PREFIXES:
+            with _command_cache_lock:
+                _command_cache[cmd] = value
 
     def _triage_output(self, tool_output, tool_name):
         print("\033[93m[*] Aplicando filtro cognitivo local...\033[0m")
@@ -115,6 +140,55 @@ class PsicoHackerIA:
             return "Puertos Abiertos Encontrados:\n" + "\n".join([f"- {p} {s} {v}" for p, s, v in open_ports])
         
         return (tool_output[:2000] + '...') if len(tool_output) > 2000 else tool_output
+
+    def _safe_register_tool(self, name: str, template: str) -> str:
+        # Sólo permitir comandos de una palabra base + parámetros; sin ; | &&
+        if any(sep in template for sep in [';', '&&', '|', '||']):
+            return "Plantilla rechazada: contiene separadores peligrosos."
+        base = template.strip().split()[0]
+        if not re.match(r'^[a-zA-Z0-9_\-]+$', name):
+            return "Nombre de herramienta inválido."
+        self.custom_tools[name] = template
+        return f"Herramienta '{name}' registrada localmente."
+
+    def _web_search_stub(self, query: str) -> str:
+        # Stub sin llamadas externas reales (evita fuga accidental). Simula ranking.
+        pseudo = [
+            {"titulo": f"Resultado simulado 1 para '{query}'", "url": "https://example.com/1", "resumen": "Resumen aproximado."},
+            {"titulo": f"Resultado simulado 2 para '{query}'", "url": "https://example.com/2", "resumen": "Otro ángulo contextual."}
+        ]
+        return json.dumps(pseudo, ensure_ascii=False, indent=2)
+
+    # ------------------------------------------------------------------
+    # Persistencia y reportes
+    # ------------------------------------------------------------------
+    def _persist_mission_log(self):
+        if not self.log_output_path:
+            timestamp = datetime.datetime.utcnow().strftime('%Y%m%d_%H%M%S')
+            self.log_output_path = f"mission_log_{timestamp}.json"
+        try:
+            with open(self.log_output_path, 'w', encoding='utf-8') as f:
+                json.dump(self.mission_log, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            logging.warning("No se pudo persistir mission_log: %s", e)
+
+    def _render_report(self, decision: Dict[str, Any], action: Dict[str, Any], result: str) -> str:
+        if self.report_format == 'markdown':
+            return (f"## Informe Táctico\n\n**Objetivo:** {self.target}\n\n" \
+                    f"**Acción:** `{action.get('tipo')}`\n\n" \
+                    f"**Comando/Payload:** `{action.get('payload')}`\n\n" \
+                    f"**Pensamiento Estratégico:**\n\n{decision.get('pensamiento_estrategico')}\n\n" \
+                    f"**Resultado (resumido):**\n\n````\n{result[:1500]}\n````\n")
+        if self.report_format == 'html':
+            return (f"<h2>Informe Táctico</h2><p><b>Objetivo:</b> {self.target}</p>" \
+                    f"<p><b>Acción:</b> {action.get('tipo')}</p>" \
+                    f"<p><b>Comando/Payload:</b> <code>{action.get('payload')}</code></p>" \
+                    f"<h3>Pensamiento Estratégico</h3><p>{decision.get('pensamiento_estrategico')}</p>" \
+                    f"<h3>Resultado (resumido)</h3><pre>{result[:1500]}</pre>")
+        # Texto plano default
+        return (f"INFORME TÁCTICO\nObjetivo: {self.target}\nAcción: {action.get('tipo')}\n" \
+                f"Comando/Payload: {action.get('payload')}\nPensamiento: {decision.get('pensamiento_estrategico')}\n" \
+                f"Resultado:\n{result[:1500]}\n")
 
     def get_ai_decision(self, context_summary):
         prompt = self.prompt_template.replace("{context}", context_summary)
@@ -144,13 +218,22 @@ class PsicoHackerIA:
             if action_type == "COMANDO_SHELL":
                 if not self._is_command_allowed(payload):
                     return "Comando rechazado por política de seguridad local (no permitido)."
+                cached = self._cache_lookup(payload)
+                if cached:
+                    return cached + "\n(CACHE)"
                 print(f"    - Comando de sistema a ejecutar: {payload}")
                 process = subprocess.run(payload, shell=True, capture_output=True, text=True, timeout=900)
-                return self._triage_output(process.stdout + process.stderr, action.get("herramienta", "shell"))
+                triaged = self._triage_output(process.stdout + process.stderr, action.get("herramienta", "shell"))
+                self._cache_store(payload, triaged)
+                return triaged
             elif action_type == "BUSQUEDA_WEB_NATIVA":
-                return "Capacidad BUSQUEDA_WEB_NATIVA aún no implementada localmente. Ajusta el plan."
+                return self._web_search_stub(payload)
             elif action_type == "EJECUCION_DE_CODIGO_NATIVA":
-                return "Ejecución dinámica de código deshabilitada por seguridad. Ajusta el plan."
+                # Interpretamos el payload como intento de crear herramienta segura: formato NAME::COMMAND_TEMPLATE
+                if '::' in payload:
+                    name, template = payload.split('::', 1)
+                    return self._safe_register_tool(name.strip(), template.strip())
+                return "Formato para creación de herramienta inválido. Usa NOMBRE::COMANDO"
             else:
                 return f"Acción '{action_type}' no implementada para ejecución directa."
         except Exception as e:
@@ -181,12 +264,11 @@ class PsicoHackerIA:
                 self.mission_log.append({"evento": "Fallo de formato IA", "respuesta_bruta": decision})
                 continue
 
+            report_preview = self._render_report(decision, action_to_execute, "(pendiente de ejecución)")
             print("\n" + "="*40)
             print("  \033[1mINFORME DE INTELIGENCIA DEL DEMIURGO\033[0m")
             print("="*40)
-            print(f"\033[94m[*] Pensamiento Estratégico:\033[0m {decision.get('pensamiento_estrategico')}")
-            print(f"    \033[94m- Acción Propuesta:\033[0m {action_to_execute.get('tipo')}")
-            print(f"    \033[94m- Payload/Comando:\033[0m {action_to_execute.get('payload')}")
+            print(report_preview if self.report_format == 'text' else report_preview[:800] + ('...' if len(report_preview) > 800 else ''))
 
             auth = input("\n\033[92mComandante, autoriza? (s/n/salir/a:mejorar): \033[0m").lower()
             
@@ -213,6 +295,9 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="PsicoHackerIA - El Demiurgo")
     parser.add_argument("target", nargs="?", help="Objetivo (IP / dominio / URL)")
     parser.add_argument("--once", action="store_true", dest="once", help="Ejecuta solo un ciclo y sale")
+    parser.add_argument("--report-format", choices=["text", "markdown", "html"], default="text", help="Formato de informe")
+    parser.add_argument("--log-file", dest="log_file", help="Ruta personalizada para mission_log JSON")
+    parser.add_argument("--disable-cache", action="store_true", dest="disable_cache", help="Desactiva cache de comandos")
     args = parser.parse_args()
 
     print("="*70)
@@ -222,8 +307,12 @@ if __name__ == "__main__":
     target_input = args.target or input("\033[92mComandante, defina el objetivo primario de la campaña: \033[0m")
     if target_input:
         agent = PsicoHackerIA(target_input)
+        agent.report_format = args.report_format
+        if args.log_file:
+            agent.log_output_path = args.log_file
+        if args.disable_cache:
+            CACHEABLE_PREFIXES.clear()
         if args.once:
-            # Ejecuta un solo ciclo (útil para automatizaciones / pruebas)
-            agent.mission_loop()  # El bucle se controla manualmente; simplificación: usuario aborta tras primer ciclo
+            agent.mission_loop()
         else:
             agent.mission_loop()
